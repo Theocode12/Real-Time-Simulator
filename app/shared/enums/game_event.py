@@ -21,6 +21,7 @@ class GameEvent(StrEnum):
 
     # Game Updates
     GAME_SCORE_UPDATE = "game.score.update"
+    GAME_COMMENTARY = "game.commentary"
 
     # Error
     ERROR = "game.error"
@@ -31,3 +32,7 @@ class GameEvent(StrEnum):
 
     # Viewer Count
     VIEWER_COUNT = "viewer.count"
+
+    # Support (rooting for a side)
+    SUPPORT_CAST = "support.cast"
+    SUPPORT_UPDATE = "support.update"

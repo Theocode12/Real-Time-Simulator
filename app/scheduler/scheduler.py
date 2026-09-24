@@ -198,6 +198,7 @@ class GameScheduler(BaseScheduler):
         return {
             "data": score,
             "type": GameEvent.GAME_SCORE_UPDATE,
+            "point_index": self.feeder.consumed_count,
         }
 
     def _start_pause_timer(self) -> None:

@@ -7,21 +7,20 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from app.broker.message_broker import MessageBroker
+from app.broker.message_broker import MessageBroker, OverflowPolicy
 from app.shared.enums.broker_channels import BrokerChannels
 
 
 class InMemoryMessageBroker(MessageBroker):
     """
     In-memory message broker using asyncio queues for lightweight pub/sub.
-    Supports publishing, subscribing, and broadcasting messages within
-    a single process.
 
-    Subscribers are stored in a nested dictionary:
-        {game_id: {channel: {queue1, queue2, ...}}}
-    Example:
-        self._subscribers["game123"]["score_update"] = {queue1, queue2}
+    Publishing is non-blocking: each subscriber declares an ``OverflowPolicy``
+    so a slow consumer can never throttle a producer (e.g. the game scheduler).
+    Subscribers are stored as ``{game_id: {channel: {queue: policy}}}``.
     """
+
+    _DEFAULT_QUEUE_SIZE = 200
 
     def __init__(
         self,
@@ -29,56 +28,116 @@ class InMemoryMessageBroker(MessageBroker):
         logger: logging.Logger | None = None,
     ) -> None:
         super().__init__(config, logger)
-        self._subscribers: dict[str, dict[str, set[asyncio.Queue[Any]]]] = defaultdict(lambda: defaultdict(set))
+        self._subscribers: dict[str, dict[str, dict[asyncio.Queue[Any], OverflowPolicy]]] = defaultdict(
+            lambda: defaultdict(dict)
+        )
+        self._dropped_messages = 0
         self._shutdown = asyncio.Event()
         self.logger.info("InMemoryMessageBroker initialized.")
 
-    async def publish(self, game_id: str, channel: str, message: Any) -> int:
+    def _queue_size(self, maxsize: int | None) -> int:
+        if maxsize is not None:
+            return max(1, maxsize)
+        return max(1, self.config.getint("broker", "queueSize", fallback=self._DEFAULT_QUEUE_SIZE))
+
+    def _record_drop(self, game_id: str, channel: BrokerChannels) -> None:
+        self._dropped_messages += 1
+        if self._dropped_messages == 1 or self._dropped_messages % 100 == 0:
+            self.logger.warning(
+                "InMemoryMessageBroker dropped %s message(s) so far (game=%s channel=%s).",
+                self._dropped_messages,
+                game_id,
+                channel,
+            )
+
+    @staticmethod
+    def _evict_oldest(queue: asyncio.Queue[Any]) -> None:
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+
+    def _put_guaranteed(self, queue: asyncio.Queue[Any], message: Any) -> None:
+        """Enqueue, evicting oldest messages if needed (used for sentinels)."""
+        while True:
+            try:
+                queue.put_nowait(message)
+                return
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+
+    async def publish(self, game_id: str, channel: BrokerChannels, message: Any) -> int:
         """
         Publish a message to a specific game_id and channel.
 
-        Args:
-            game_id (str): Identifier to group subscribers.
-            channel (str): Channel to deliver the message to.
-            message (Any): Message to deliver.
-
-        Returns:
-            int: Number of queues successfully notified.
+        Returns the number of subscribers the message was delivered to. Saturation
+        is handled per-subscriber according to its overflow policy, so this never
+        blocks on a slow consumer unless the subscriber explicitly opted in.
         """
         if self._shutdown.is_set():
             self.logger.warning("Publish ignored: InMemoryMessageBroker is shutting down.")
             return 0
 
-        subscribers = self._subscribers.get(game_id, {}).get(channel, set())
-
+        subscribers = self._subscribers.get(game_id, {}).get(channel, {})
         if not subscribers:
             return 0
 
-        tasks = [q.put(message) for q in list(subscribers)]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        success_count = 0
-        for i, r in enumerate(results):
-            if isinstance(r, Exception):
-                queue_info = list(subscribers)[i]
-                self.logger.error(
-                    f"InMemoryMessageBroker: Failed to publish to {game_id}:{channel}, queue={queue_info}: {r}",
-                    exc_info=r,
-                )
-            else:
-                success_count += 1
+        is_sentinel = isinstance(message, dict) and bool(message.get("__sentinel__"))
+        delivered = 0
 
-        return success_count
+        for queue, policy in list(subscribers.items()):
+            try:
+                if is_sentinel:
+                    # End-of-stream markers must always be delivered.
+                    self._put_guaranteed(queue, message)
+                else:
+                    queue.put_nowait(message)
+                delivered += 1
+            except asyncio.QueueFull:
+                if policy == OverflowPolicy.BLOCK:
+                    try:
+                        await queue.put(message)
+                        delivered += 1
+                    except Exception as e:  # pragma: no cover - defensive
+                        self.logger.error(
+                            "InMemoryMessageBroker: Failed to publish to %s:%s: %s",
+                            game_id,
+                            channel,
+                            e,
+                            exc_info=e,
+                        )
+                elif policy == OverflowPolicy.DROP_OLD:
+                    self._evict_oldest(queue)
+                    self._record_drop(game_id, channel)
+                    try:
+                        queue.put_nowait(message)
+                        delivered += 1
+                    except asyncio.QueueFull:
+                        self._record_drop(game_id, channel)
+                else:  # DROP_NEW
+                    self._record_drop(game_id, channel)
+
+        return delivered
 
     async def subscribe(
-        self, game_id: str, channels: BrokerChannels | list[BrokerChannels]
+        self,
+        game_id: str,
+        channels: BrokerChannels | list[BrokerChannels],
+        *,
+        policy: OverflowPolicy = OverflowPolicy.BLOCK,
+        maxsize: int | None = None,
     ) -> AsyncGenerator[Any, None]:
         """
         Subscribe to one or more channels for a given game_id.
 
         Args:
-            game_id (str): Game identifier for namespacing.
-            channels (BrokerChannels | list[BrokerChannels]): One or more channels
-                                                              to subscribe.
+            game_id: Game identifier for namespacing.
+            channels: One or more channels to subscribe.
+            policy: Overflow behaviour for this subscriber's queue.
+            maxsize: Queue size (defaults to the ``[broker] queueSize`` setting).
 
         Returns:
             AsyncGenerator[Any, None]: Yields messages from the subscribed channels.
@@ -94,14 +153,15 @@ class InMemoryMessageBroker(MessageBroker):
         else:
             channels_list = channels
 
-        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=100)
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=self._queue_size(maxsize))
 
         self.logger.info(
-            f"InMemoryMessageBroker: Subscribing to channels for game_id={game_id}, channels={channels_list}"
+            f"InMemoryMessageBroker: Subscribing to channels for game_id={game_id}, "
+            f"channels={channels_list}, policy={policy}"
         )
 
         for channel in channels_list:
-            self._subscribers[game_id][channel].add(queue)
+            self._subscribers[game_id][channel][queue] = policy
 
         async def generator() -> AsyncGenerator[Any, None]:
             try:
@@ -122,14 +182,7 @@ class InMemoryMessageBroker(MessageBroker):
         return generator()
 
     def _unsubscribe(self, game_id: str, channels: list[BrokerChannels], queue: asyncio.Queue[Any]) -> None:
-        """
-        Unsubscribe a queue from all specified channels under a game_id.
-
-        Args:
-            game_id (str): The game ID the queue was subscribed under.
-            channels (list[BrokerChannels]): Channels to remove the queue from.
-            queue (asyncio.Queue[Any]): The queue to remove.
-        """
+        """Unsubscribe a queue from all specified channels under a game_id."""
         self.logger.debug(f"Unsubscribing queue from channels :{channels}. Game id {game_id}.")
         channel_map = self._subscribers.get(game_id)
         if not channel_map:
@@ -138,7 +191,7 @@ class InMemoryMessageBroker(MessageBroker):
         for channel in channels:
             subscriber_queues = channel_map.get(channel)
             if subscriber_queues:
-                subscriber_queues.discard(queue)
+                subscriber_queues.pop(queue, None)
                 if not subscriber_queues:
                     del channel_map[channel]
 
@@ -162,9 +215,9 @@ class InMemoryMessageBroker(MessageBroker):
             for channel_queues in game_channels.values():
                 all_queues.update(channel_queues)
 
-        # Actively unblock consumers
-        tasks = [q.put({"__sentinel__": True}) for q in all_queues]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # Actively unblock consumers (evicting if a queue is saturated).
+        for queue in all_queues:
+            self._put_guaranteed(queue, {"__sentinel__": True})
 
         self._subscribers.clear()
         self.logger.info("InMemoryMessageBroker: Shutdown completed.")

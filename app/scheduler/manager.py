@@ -5,13 +5,14 @@ import configparser
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.broker.message_broker import MessageBroker
 from app.scheduler.game_feeder import BaseGameFeeder
 from app.scheduler.game_feeder_factory import create_game_feeder
 from app.scheduler.scheduler import BaseScheduler, GameScheduler, SchedulerState
 from db.redis_storage import RedisStorageSingleton as RedisStorage
+from gameengine.store.game_data import GameMetaData
 from utils.get_db_client import get_redis_client
 from utils.load_config import load_config
 from utils.logger import get_logger
@@ -19,6 +20,9 @@ from utils.logger import get_logger
 from .game_state_key_builder import GameStateKeyBuilder
 from .redis_state_publisher import RedisSchedulerStatePublisher
 from .state_publisher import SchedulerStatePublisher
+
+if TYPE_CHECKING:
+    from app.commentary.manager import CommentaryManager
 
 
 @dataclass(slots=True)
@@ -49,6 +53,7 @@ class SchedulerManager:
         broker: MessageBroker,
         config: configparser.ConfigParser | None = None,
         logger: logging.Logger | None = None,
+        commentary_manager: CommentaryManager | None = None,
     ) -> None:
         """
         Initialize the SchedulerManager.
@@ -59,11 +64,15 @@ class SchedulerManager:
                                     storage settings.
             logger (Optional[Logger]): Optional logger instance. If not provided,
                 a default logger is retrieved using `get_logger()`.
+            commentary_manager (Optional[CommentaryManager]): Optional commentary
+                lifecycle manager. When provided, commentary workers are started
+                and stopped alongside their game schedulers.
         """
         self.logger = logger or get_logger()
         self.config = config or load_config()
         self.logger.info("Initializing SchedulerManager...")
         self._broker = broker
+        self._commentary_manager = commentary_manager
         self._schedulers = {}
         self._scheduler_tasks = {}
         self._scheduler_contexts = {}
@@ -86,6 +95,24 @@ class SchedulerManager:
             ValueError: If the feeder type is unsupported.
         """
         return create_game_feeder(game_id, self.config, self.logger)
+
+    async def _safe_game_details(self, feeder: BaseGameFeeder) -> GameMetaData | None:
+        """
+        Best-effort fetch + validation of game metadata for the commentary layer.
+
+        The scheduler owns the feeder; commentary receives a typed contract.
+        Failures are non-fatal: commentary degrades to generic labels when
+        metadata is unavailable or malformed.
+        """
+        try:
+            raw = await feeder.get_game_details()
+            return GameMetaData.model_validate(raw)
+        except Exception:
+            self.logger.warning(
+                "Failed to load/validate game details for commentary; continuing without them.",
+                exc_info=True,
+            )
+            return None
 
     async def _create_state_publisher(self) -> SchedulerStatePublisher | None:
         if not self.config.getboolean("liveGameRegistry", "enabled", fallback=False):
@@ -178,6 +205,10 @@ class SchedulerManager:
                 self._scheduler_contexts[context.game_id] = context
 
                 task.add_done_callback(self._handle_task_completion)
+
+                if self._commentary_manager is not None:
+                    game_details = await self._safe_game_details(feeder)
+                    await self._commentary_manager.start_for_game(context.game_id, game_details)
 
                 self.logger.info(f"Scheduler for game {context.game_id} created and running.")
                 return scheduler, task
@@ -326,6 +357,9 @@ class SchedulerManager:
         scheduler = self._schedulers.pop(game_id, None)
         task = self._scheduler_tasks.pop(game_id, None)
         self._scheduler_contexts.pop(game_id, None)
+
+        if self._commentary_manager is not None:
+            await self._commentary_manager.stop_for_game(game_id)
 
         if scheduler is None and task is None:
             self.logger.warning(
@@ -486,6 +520,10 @@ class SchedulerManager:
                         self._scheduler_contexts[game_id] = context
 
                         task.add_done_callback(self._handle_task_completion)
+
+                        if self._commentary_manager is not None:
+                            game_details = await self._safe_game_details(feeder)
+                            await self._commentary_manager.start_for_game(game_id, game_details)
 
                         if game_state in ("ongoing", "autoplay"):
                             await scheduler.start()

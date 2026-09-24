@@ -109,6 +109,12 @@ disable_error_code = ["import-untyped"]
 module = ["*"]
 ignore_missing_imports = true
 
+# `gameengine` is installed as an editable git dependency; mypy cannot resolve
+# its modules on the search path, so treat them as untyped.
+[[tool.mypy.overrides]]
+module = ["gameengine", "gameengine.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["test"]

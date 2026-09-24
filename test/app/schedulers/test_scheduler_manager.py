@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from configparser import ConfigParser
-from unittest.mock import MagicMock
+from contextlib import suppress
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pytest import MonkeyPatch
 
 from app.scheduler.manager import SchedulerContext, SchedulerManager
+from gameengine.store.game_data import GameMetaData
 
 
 # Dummy GameScheduler and Feeder
@@ -146,3 +148,56 @@ async def test_cleanup_scheduler(monkeypatch: MonkeyPatch, scheduler_manager: Sc
         await scheduler_manager._background_tasks.pop()
 
     assert not scheduler_manager.has_scheduler(game_id)
+
+
+@pytest.mark.asyncio
+async def test_create_scheduler_forwards_game_details_to_commentary(
+    monkeypatch: MonkeyPatch,
+    valid_config: ConfigParser,
+    dummy_logger: logging.Logger,
+) -> None:
+    details: dict = {
+        "game_id": "game-c",
+        "teams": {
+            "team_1": {"name": "A", "players": [{"name": "A"}]},
+            "team_2": {"name": "B", "players": [{"name": "B"}]},
+        },
+    }
+
+    class FeederWithDetails(DummyFeeder):
+        async def get_game_details(self) -> dict:
+            return details
+
+    commentary = MagicMock()
+    commentary.start_for_game = AsyncMock()
+    commentary.stop_for_game = AsyncMock()
+
+    scheduler_manager = SchedulerManager(
+        MagicMock(),
+        config=valid_config,
+        logger=dummy_logger,
+        commentary_manager=commentary,
+    )
+
+    monkeypatch.setattr("app.scheduler.manager.create_game_feeder", lambda *a, **kw: FeederWithDetails())
+    monkeypatch.setattr("app.scheduler.manager.GameScheduler", DummyScheduler)
+
+    _, task = await scheduler_manager.create_or_get_scheduler(SchedulerContext(game_id="game-c"))
+
+    commentary.start_for_game.assert_awaited_once()
+    forward_args = commentary.start_for_game.await_args.args
+    assert forward_args[0] == "game-c"
+    forwarded = forward_args[1]
+    assert isinstance(forwarded, GameMetaData)
+    assert forwarded.teams["team_1"].name == "A"
+
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+    for _ in range(3):
+        await asyncio.sleep(0)
+        pending = list(scheduler_manager._background_tasks)
+        if not pending:
+            break
+        await asyncio.gather(*pending, return_exceptions=True)

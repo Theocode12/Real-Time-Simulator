@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from app.broker.memory_message_broker import InMemoryMessageBroker
+from app.broker.message_broker import OverflowPolicy
 from app.shared.enums.broker_channels import BrokerChannels
 
 
@@ -89,7 +90,7 @@ async def test_shutdown_sends_sentinel_and_clears_state(
 
     # Set up an additional listener to simulate another consumer
     listening_queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
-    broker._subscribers[game_id][channel].add(listening_queue)
+    broker._subscribers[game_id][channel][listening_queue] = OverflowPolicy.BLOCK
 
     # Simulate shutdown
     await broker.shutdown()
@@ -117,3 +118,41 @@ async def test_publish_after_shutdown_is_ignored(
     await broker.shutdown()
     count = await broker.publish("any-game", BrokerChannels.SCORES_UPDATE, {"x": 1})
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_drop_old_policy_keeps_freshest(broker: InMemoryMessageBroker) -> None:
+    game_id = "overflow"
+    gen = await broker.subscribe(
+        game_id,
+        BrokerChannels.SCORES_UPDATE,
+        policy=OverflowPolicy.DROP_OLD,
+        maxsize=2,
+    )
+
+    for i in range(5):
+        await broker.publish(game_id, BrokerChannels.SCORES_UPDATE, {"i": i})
+
+    received = [await anext(gen), await anext(gen)]
+    assert received == [{"i": 3}, {"i": 4}]
+    assert broker._dropped_messages == 3
+
+
+@pytest.mark.asyncio
+async def test_sentinel_always_delivered_when_full(broker: InMemoryMessageBroker) -> None:
+    game_id = "sentinel-full"
+    gen = await broker.subscribe(
+        game_id,
+        BrokerChannels.SCORES_UPDATE,
+        policy=OverflowPolicy.DROP_NEW,
+        maxsize=1,
+    )
+
+    await broker.publish(game_id, BrokerChannels.SCORES_UPDATE, {"i": 0})
+    await broker.publish(game_id, BrokerChannels.SCORES_UPDATE, {"i": 1})  # dropped
+
+    await broker.publish(game_id, BrokerChannels.SCORES_UPDATE, {"__sentinel__": True})
+
+    # The sentinel terminates the consumer even though the queue was saturated.
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(anext(gen), timeout=2)

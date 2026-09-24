@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from socketio import AsyncServer  # type: ignore
 
-from app.broker.message_broker import MessageBroker
+from app.broker.message_broker import MessageBroker, OverflowPolicy
 from app.shared.enums.broker_channels import BrokerChannels
 from app.shared.enums.game_event import GameEvent
 
@@ -62,7 +62,9 @@ class BrokerRelay:
         processor: MessageProcessor,
     ) -> None:
         try:
-            iterator = await self._broker.subscribe(game_id, channels)
+            # Prefer the freshest stream to clients; score payloads are cumulative
+            # snapshots, so dropping an intermediate update self-heals on the next.
+            iterator = await self._broker.subscribe(game_id, channels, policy=OverflowPolicy.DROP_OLD)
             async for message in iterator:
                 if not isinstance(message, dict):
                     continue

@@ -101,6 +101,8 @@ class JoinGameHandler(BaseHandler):
                 to=sid,
                 namespace=namespace,
             )
+
+            await self._replay_commentary(context, sid, game_id, namespace)
         except Exception as e:
             logger.error(
                 f"JoinGameHandler: Failed to add client {sid} to room {game_id}: {e}",
@@ -109,6 +111,32 @@ class JoinGameHandler(BaseHandler):
             await context.sio.emit(
                 GameEvent.ERROR,
                 {"error": f"Failed to enter game room '{game_id}'."},
+                to=sid,
+                namespace=namespace,
+            )
+
+    async def _replay_commentary(
+        self,
+        context: AppContext,
+        sid: str,
+        game_id: str,
+        namespace: str,
+    ) -> None:
+        """Send the most recent commentary lines to a client that just joined."""
+        commentary_manager = getattr(context, "commentary_manager", None)
+        if commentary_manager is None:
+            return
+
+        try:
+            recent = await commentary_manager.get_recent(game_id, limit=10)
+        except Exception:
+            context.logger.debug("Commentary replay failed for game %s", game_id, exc_info=True)
+            return
+
+        for line in recent:
+            await context.sio.emit(
+                GameEvent.GAME_COMMENTARY,
+                {"type": GameEvent.GAME_COMMENTARY.value, "data": line},
                 to=sid,
                 namespace=namespace,
             )

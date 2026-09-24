@@ -3,14 +3,15 @@ import os
 from configparser import ConfigParser
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import redis.asyncio as redis
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 
 from app.infra.music_file_store import MusicFileStore
 from app.infra.music_redis_store import MusicRedisStore
 from app.services.music_service import MusicService
+from app.services.support_service import SupportService
 from db.redis_storage import RedisStorageSingleton
 from utils.load_config import load_config
 from utils.logger import get_logger
@@ -62,6 +63,23 @@ def get_music_service() -> MusicService:
 
     music_service_instance = MusicService(file_store, redis_store_obj)
     return music_service_instance
+
+
+def get_support_service(request: Request) -> SupportService:
+    """
+    Return the shared SupportService instance created with the Socket.IO context.
+
+    Keeping a single instance ensures the REST API and the websocket namespace
+    read and write the exact same support state.
+    """
+    sio_context = getattr(request.app.state, "sio_context", None)
+    support_service = getattr(sio_context.context, "support", None) if sio_context else None
+
+    if support_service is None:
+        logger.error("Support service not available on app state")
+        raise HTTPException(status_code=503, detail="Support service unavailable")
+
+    return cast(SupportService, support_service)
 
 
 def get_app_logger(

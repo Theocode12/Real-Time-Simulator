@@ -10,7 +10,7 @@ from redis.asyncio import Redis
 from redis.asyncio.client import PubSub
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from app.broker.message_broker import MessageBroker
+from app.broker.message_broker import MessageBroker, OverflowPolicy
 from app.shared.enums.broker_channels import BrokerChannels
 from db.redis_storage import RedisStorageSingleton as RedisStorage
 
@@ -93,11 +93,19 @@ class RedisMessageBroker(MessageBroker):
             raise
 
     async def subscribe(
-        self, game_id: str, channels: BrokerChannels | list[BrokerChannels]
+        self,
+        game_id: str,
+        channels: BrokerChannels | list[BrokerChannels],
+        *,
+        policy: OverflowPolicy = OverflowPolicy.BLOCK,
+        maxsize: int | None = None,
     ) -> AsyncGenerator[Any, None]:
         """
         Subscribe to one or more channels for a specific game_id,
         and yield incoming messages.
+
+        ``policy`` and ``maxsize`` are accepted for interface parity; Redis
+        pub/sub is fire-and-forget and applies no client-side backpressure.
 
         Args:
             game_id (str): Game identifier used to namespace the channel.

@@ -1,0 +1,43 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.so
+
+# --- Virtual environments ---
+.venv/
+venv/
+ENV/
+
+# --- Secrets & local config (NEVER commit) ---
+.env
+.env.*
+!.env.example
+config.ini
+
+# --- Logs ---
+logs/
+*.log
+
+# --- Build artifacts ---
+build/
+dist/
+*.egg-info/
+*.egg
+
+# --- Test & caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- Runtime / generated data ---
+tmp_uploads/
+game_data/
+static/media/
+
+# --- OS / editors ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
