@@ -21,13 +21,16 @@ class GameEvent(StrEnum):
 
     # Game Updates
     GAME_SCORE_UPDATE = "game.score.update"
+    GAME_COMMENTARY = "game.commentary"
 
     # Error
     ERROR = "game.error"
 
     # Messages
-    MESSAGE_JOIN = "message.join"
     MESSAGE_SEND = "message.send"
 
     # Viewer Count
     VIEWER_COUNT = "viewer.count"
+
+    # Support (rooting for a side)
+    SUPPORT_UPDATE = "support.update"

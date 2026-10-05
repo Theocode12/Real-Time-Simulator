@@ -4,13 +4,14 @@ import configparser
 import json
 import logging
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from typing import Any, cast
 
 from redis.asyncio import Redis
 from redis.asyncio.client import PubSub
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from app.broker.message_broker import MessageBroker
+from app.broker.message_broker import MessageBroker, OverflowPolicy
 from app.shared.enums.broker_channels import BrokerChannels
 from db.redis_storage import RedisStorageSingleton as RedisStorage
 
@@ -31,7 +32,7 @@ class RedisMessageBroker(MessageBroker):
         super().__init__(config, logger)
         self.redis_store = redis_store or RedisStorage(self.config, self.logger)
         self.redis: Redis | None = None
-        self._active_pubsubs: set[tuple[PubSub, tuple[BrokerChannels, ...]]] = set()
+        self._active_pubsubs: set[tuple[PubSub, str, tuple[BrokerChannels, ...]]] = set()
         self.logger.info("RedisMessageBroker initialized.")
 
     async def connect(self) -> None:
@@ -93,11 +94,19 @@ class RedisMessageBroker(MessageBroker):
             raise
 
     async def subscribe(
-        self, game_id: str, channels: BrokerChannels | list[BrokerChannels]
+        self,
+        game_id: str,
+        channels: BrokerChannels | list[BrokerChannels],
+        *,
+        policy: OverflowPolicy = OverflowPolicy.BLOCK,
+        maxsize: int | None = None,
     ) -> AsyncGenerator[Any, None]:
         """
         Subscribe to one or more channels for a specific game_id,
         and yield incoming messages.
+
+        ``policy`` and ``maxsize`` are accepted for interface parity; Redis
+        pub/sub is fire-and-forget and applies no client-side backpressure.
 
         Args:
             game_id (str): Game identifier used to namespace the channel.
@@ -119,7 +128,8 @@ class RedisMessageBroker(MessageBroker):
         elif len(channels) == 0:
 
             async def empty_generator() -> AsyncGenerator[Any, None]:
-                yield
+                return
+                yield  # pragma: no cover - makes this an empty async generator
 
             return empty_generator()
         else:
@@ -132,7 +142,7 @@ class RedisMessageBroker(MessageBroker):
             full_channel = self._get_full_channel(game_id, channel)
             await pubsub.subscribe(full_channel)
 
-        self._active_pubsubs.add((pubsub, channels_list))
+        self._active_pubsubs.add((pubsub, game_id, channels_list))
         self.logger.info(f"Subscribed to channels: {[f'{game_id}:{ch}' for ch in channels_list]}")
 
         async def generator() -> AsyncGenerator[Any, None]:
@@ -150,7 +160,11 @@ class RedisMessageBroker(MessageBroker):
             finally:
                 for channel in channels_list:
                     full_channel = self._get_full_channel(game_id, channel)
-                    await pubsub.unsubscribe(full_channel)
+                    with suppress(Exception):
+                        await pubsub.unsubscribe(full_channel)
+                self._active_pubsubs.discard((pubsub, game_id, channels_list))
+                with suppress(Exception):
+                    await pubsub.aclose()
                 self.logger.info(f"Unsubscribed from channels: {[f'{game_id}:{ch}' for ch in channels_list]}")
 
         return generator()
@@ -164,11 +178,15 @@ class RedisMessageBroker(MessageBroker):
         if self.redis:
             sentinel_message = json.dumps({"__sentinel__": True})
 
-            for pubsub, channels in self._active_pubsubs:
+            for pubsub, sub_game_id, channels in list(self._active_pubsubs):
                 for channel in channels:
-                    await self.redis.publish(channel, sentinel_message)
-                await pubsub.unsubscribe()
-                await pubsub.aclose()  # type: ignore
+                    full_channel = self._get_full_channel(sub_game_id, channel)
+                    with suppress(Exception):
+                        await self.redis.publish(full_channel, sentinel_message)
+                with suppress(Exception):
+                    await pubsub.unsubscribe()
+                with suppress(Exception):
+                    await pubsub.aclose()  # type: ignore
 
             await self.redis.aclose()
             self._active_pubsubs.clear()

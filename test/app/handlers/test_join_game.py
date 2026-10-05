@@ -20,6 +20,7 @@ def mock_context() -> MagicMock:
     context.scheduler_manager.get_game_data = AsyncMock()
     context.sio = AsyncMock()
     context.broker_relay = AsyncMock()
+    context.commentary_manager = None
 
     config = ConfigParser()
     config.add_section("broker")

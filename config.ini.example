@@ -6,10 +6,12 @@ gameFeeder = redis
 gameDataDir = data/games
 gameFileExt = .json
 
-# For redis
+# For redis (redisUrl takes precedence when set; otherwise host/port/username/password)
 redisUrl =
 redisHost =
 redisPort =
+redisUsername = default
+redisPassword =
 
 # Broker can be 'memory' or 'redis'
 messageBroker = memory
@@ -56,8 +58,48 @@ ttlSeconds = 30
 scanBatchSize = 20
 visibleStates = ongoing
 
+[support]
+enabled = true
+ttlSeconds = 43200
+
 [broker]
-relay_channels = scores_update,controls
+relay_channels = scores_update,controls,commentary
+# In-memory broker: per-subscriber queue size (overflow is handled per policy).
+queueSize = 200
+
+[commentary]
+# Master switch for the AI commentary pipeline.
+enabled = true
+# Provider implementation: 'template' (rules-based), 'llm' (OpenAI-compatible), or 'noop'.
+provider = template
+
+# --- LLM settings (used when provider = llm) ---
+# Any OpenAI-compatible endpoint: OpenAI, OpenRouter, vLLM, Ollama, etc.
+model = gpt-4.1-nano
+baseUrl = https://api.openai.com/v1
+apiKeyEnv = OPENAI_API_KEY
+timeoutSeconds = 8
+temperature = 0.7
+maxTokens = 60
+# Fall back to the template provider if the LLM call fails or is misconfigured.
+fallbackToTemplate = true
+# Rolling history handed to providers (bounded to keep memory usage flat).
+recentLines = 5
+recentPoints = 6
+# Optionally seed the rolling history from persisted commentary on start.
+# Set seedHistoryLimit to a large number for an (unbounded) full-history view.
+seedHistory = false
+seedHistoryLimit = 20
+# Coalescing buffer for pending points awaiting generation.
+pendingBuffer = 3
+# Maximum number of commentary lines retained per game (Redis + replay window).
+maxLinesPerGame = 200
+# Minimum salience for a point to always be commentated (0.0 - 1.0).
+salienceThreshold = 0.3
+# Routine (low-salience) points are commentated every Nth point. 0 disables.
+routineInterval = 2
+# TTL (seconds) for the per-game commentary history in Redis.
+ttlSeconds = 43200
 
 [celery]
 BrokerUrl =

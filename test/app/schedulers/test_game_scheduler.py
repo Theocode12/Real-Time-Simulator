@@ -241,7 +241,12 @@ def test_format_score_update_payload(
     )
 
     raw_score = {"home": 1, "away": 2}
-    expected = {"data": raw_score, "type": GameEvent.GAME_SCORE_UPDATE}
+    dummy_feeder.consumed_count = 3
+    expected = {
+        "data": raw_score,
+        "type": GameEvent.GAME_SCORE_UPDATE,
+        "point_index": 3,
+    }
 
     result = scheduler._format_score_update_payload(raw_score)
     assert result == expected

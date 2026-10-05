@@ -7,9 +7,11 @@ from typing import TYPE_CHECKING
 from socketio import AsyncServer, Manager  # type: ignore
 
 from app.broker.message_broker import MessageBroker
+from app.commentary.manager import CommentaryManager
 from app.core.ws_auth import AuthService
 from app.handlers.broker_relay import BrokerRelay
 from app.scheduler.manager import SchedulerManager
+from app.services.support_service import SupportService
 from utils.load_config import load_config
 from utils.logger import get_logger
 
@@ -25,6 +27,8 @@ class AppContext:
     broker_relay: BrokerRelay
     router: Router
     client_manager: Manager
+    support: SupportService
+    commentary_manager: CommentaryManager | None
 
     def __init__(
         self,
@@ -34,6 +38,8 @@ class AppContext:
         router: Router,
         scheduler_manager: SchedulerManager,
         broker_relay: BrokerRelay,
+        support: SupportService,
+        commentary_manager: CommentaryManager | None = None,
         config: configparser.ConfigParser | None = None,
         logger: logging.Logger | None = None,
     ):
@@ -46,3 +52,5 @@ class AppContext:
         self.scheduler_manager = scheduler_manager
         self.client_manager = self.sio.manager
         self.broker_relay = broker_relay
+        self.support = support
+        self.commentary_manager = commentary_manager

@@ -28,12 +28,9 @@ class GameNamespace(BaseNamespace):
             sid: The session ID of the client.
             environ: The environment dictionary provided by the connection.
         """
-        # self.logger.info(
-        #     f"Client connected to namespace {self.namespace}: SID={sid}"
-        #     f" with environ={environ}"
-        # )
         # TODO: Implement authentication/validation logic using environ or an
         #        initial auth message if needed
+        self.logger.debug(f"[game] Client connected: SID={sid}")
 
     async def on_disconnect(self, sid: str) -> None:
         """
