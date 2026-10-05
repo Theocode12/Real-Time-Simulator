@@ -58,6 +58,9 @@ class CommentaryWorker:
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
+        # Reset so a restart after stop_for_game doesn't exit immediately via
+        # _generate_loop's _ingest_done check (set when the previous run ended).
+        self._ingest_done = False
         # Subscribe before spawning the task so no score updates are missed
         # between scheduler start and worker readiness. The worker drains fast,
         # so saturation is unlikely; DROP_OLD keeps it current if it ever happens.
@@ -98,7 +101,7 @@ class CommentaryWorker:
     def _dequeue_event(self) -> CommentaryEvent | None:
         if not self._pending:
             return None
-        # Highest importance first; tie-break on newest sequence.
+        # Highest importance first; tie-break on oldest sequence.
         index = max(range(len(self._pending)), key=lambda i: (self._pending[i][0], -self._pending[i][1]))
         return self._pending.pop(index)[2]
 

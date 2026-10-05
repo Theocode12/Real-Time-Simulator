@@ -15,9 +15,11 @@ class InMemoryMessageBroker(MessageBroker):
     """
     In-memory message broker using asyncio queues for lightweight pub/sub.
 
-    Publishing is non-blocking: each subscriber declares an ``OverflowPolicy``
-    so a slow consumer can never throttle a producer (e.g. the game scheduler).
-    Subscribers are stored as ``{game_id: {channel: {queue: policy}}}``.
+    Publishing is non-blocking except for subscribers that explicitly opt into
+    ``OverflowPolicy.BLOCK`` (which awaits queue space and may throttle the
+    producer). ``DROP_NEW``/``DROP_OLD`` subscribers never throttle the
+    producer (e.g. the game scheduler). Subscribers are stored as
+    ``{game_id: {channel: {queue: policy}}}``.
     """
 
     _DEFAULT_QUEUE_SIZE = 200
@@ -74,8 +76,9 @@ class InMemoryMessageBroker(MessageBroker):
         Publish a message to a specific game_id and channel.
 
         Returns the number of subscribers the message was delivered to. Saturation
-        is handled per-subscriber according to its overflow policy, so this never
-        blocks on a slow consumer unless the subscriber explicitly opted in.
+        is handled per-subscriber according to its overflow policy: DROP_NEW and
+        DROP_OLD never block, while BLOCK awaits queue space and may throttle
+        the producer.
         """
         if self._shutdown.is_set():
             self.logger.warning("Publish ignored: InMemoryMessageBroker is shutting down.")
@@ -147,7 +150,8 @@ class InMemoryMessageBroker(MessageBroker):
         elif len(channels) == 0:
 
             async def empty_generator() -> AsyncGenerator[Any, None]:
-                yield
+                return
+                yield  # pragma: no cover - makes this an empty async generator
 
             return empty_generator()
         else:

@@ -19,7 +19,10 @@ class FallbackCommentaryProvider:
         event: CommentaryEvent,
         context: CommentaryContext | None = None,
     ) -> CommentaryDraft | None:
-        draft = await self.primary.generate(event, context)
+        try:
+            draft = await self.primary.generate(event, context)
+        except Exception:
+            draft = None
         if draft is not None and draft.text:
             return draft
         return await self.fallback.generate(event, context)

@@ -156,3 +156,10 @@ async def test_sentinel_always_delivered_when_full(broker: InMemoryMessageBroker
     # The sentinel terminates the consumer even though the queue was saturated.
     with pytest.raises(StopAsyncIteration):
         await asyncio.wait_for(anext(gen), timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_empty_channels_yields_nothing(broker: InMemoryMessageBroker) -> None:
+    gen = await broker.subscribe("game-empty", [])
+
+    assert [message async for message in gen] == []
