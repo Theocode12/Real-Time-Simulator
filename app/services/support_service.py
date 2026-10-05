@@ -29,6 +29,9 @@ class SupportService:
         return SupportCounts.from_raw(counts)
 
     async def cast_vote(self, game_id: str, voter_id: str, side: SupportSide) -> SupportCounts:
+        # NOTE: liveness check is separate from the atomic Lua vote, so a game
+        # ending between the two may still record one last vote. Accepted: the
+        # vote itself stays atomic and the window is a single EXISTS RTT.
         if not await self.store.is_game_live(game_id):
             raise SupportGameNotLiveError(game_id)
 

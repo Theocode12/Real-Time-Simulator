@@ -3,16 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from socketio import AsyncServer  # type: ignore
 
 from app.broker.message_broker import MessageBroker, OverflowPolicy
 from app.shared.enums.broker_channels import BrokerChannels
 from app.shared.enums.game_event import GameEvent
-
-if TYPE_CHECKING:
-    pass
 
 MessageProcessor = Callable[[dict[str, Any]], Awaitable[tuple[str, dict[str, Any]] | None]]
 
@@ -53,6 +50,23 @@ class BrokerRelay:
 
             task.add_done_callback(_done_callback)
             self._logger.info(f"Broker relay started for {key}.")
+
+    async def stop_for_game(self, game_id: str) -> None:
+        """Cancel relay tasks for one game so finished games release resources.
+
+        Tasks are keyed ``f"{game_id}:{channels}"``; every key belonging to
+        ``game_id`` is cancelled and removed. Missing keys are a no-op.
+        """
+        prefix = f"{game_id}:"
+        async with self._lock:
+            keys = [key for key in self._tasks if key == game_id or key.startswith(prefix)]
+            tasks = [self._tasks.pop(key) for key in keys]
+
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._logger.info(f"Broker relay stopped for game {game_id}.")
 
     async def _listener(
         self,

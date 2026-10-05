@@ -42,9 +42,11 @@ class CommentaryStore:
         try:
             client = await self._client()
             key = self.key(game_id)
-            await client.rpush(key, json.dumps(line))
-            await client.ltrim(key, -self._max_lines, -1)
-            await client.expire(key, self._ttl)
+            pipe = client.pipeline()
+            pipe.rpush(key, json.dumps(line))
+            pipe.ltrim(key, -self._max_lines, -1)
+            pipe.expire(key, self._ttl)
+            await pipe.execute()
         except Exception:
             self.logger.debug("Failed to persist commentary line for game %s", game_id, exc_info=True)
 

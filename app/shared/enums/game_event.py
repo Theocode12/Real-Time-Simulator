@@ -27,12 +27,10 @@ class GameEvent(StrEnum):
     ERROR = "game.error"
 
     # Messages
-    MESSAGE_JOIN = "message.join"
     MESSAGE_SEND = "message.send"
 
     # Viewer Count
     VIEWER_COUNT = "viewer.count"
 
     # Support (rooting for a side)
-    SUPPORT_CAST = "support.cast"
     SUPPORT_UPDATE = "support.update"

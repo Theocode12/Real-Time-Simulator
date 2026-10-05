@@ -97,6 +97,7 @@ class SupportNamespace(BaseNamespace):
 
         now = time.monotonic()
         if now - self._last_cast.get(sid, 0.0) < _CAST_MIN_INTERVAL_SECONDS:
+            await self.emit_error(sid, "Casting too fast; please retry.")
             return
         self._last_cast[sid] = now
 

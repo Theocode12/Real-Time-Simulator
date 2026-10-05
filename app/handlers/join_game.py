@@ -61,8 +61,6 @@ class JoinGameHandler(BaseHandler):
             )
             return
 
-        # scheduler = context.scheduler_manager.get_scheduler(game_id)
-        # if not scheduler:
         if not context.scheduler_manager.has_scheduler(game_id):
             logger.warning(f"JoinGameHandler: Game '{game_id}' not found or inactive.")
             await context.sio.emit(

@@ -12,6 +12,7 @@ from app.broker.memory_message_broker import InMemoryMessageBroker
 from app.commentary.agent import CommentaryAgent
 from app.commentary.context import CommentaryContext
 from app.commentary.events import build_commentary_event
+from app.commentary.formatting import score_line
 from app.commentary.manager import CommentaryManager
 from app.commentary.providers.factory import create_commentary_provider
 from app.commentary.providers.fallback import FallbackCommentaryProvider
@@ -258,6 +259,112 @@ async def test_worker_generates_from_score_stream(valid_config: ConfigParser) ->
         assert received["type"] == "game.commentary"
     finally:
         await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_restart_after_stop(valid_config: ConfigParser) -> None:
+    """A worker restarted after stop_for_game must process new events (no stale _ingest_done)."""
+    broker = InMemoryMessageBroker(config=valid_config)
+    worker = CommentaryWorker(
+        game_id="g1",
+        broker=broker,
+        config=valid_config,
+        game_details=GAME_DETAILS,
+    )
+    iterator = await broker.subscribe("g1", BrokerChannels.COMMENTARY)
+
+    await worker.start()
+    try:
+        await broker.publish("g1", BrokerChannels.SCORES_UPDATE, make_message(1, is_match_point=True))
+        first = await asyncio.wait_for(iterator.__anext__(), timeout=2)
+        assert first["type"] == "game.commentary"
+    finally:
+        await worker.stop()
+
+    await worker.start()
+    try:
+        await broker.publish("g1", BrokerChannels.SCORES_UPDATE, make_message(2, is_match_point=True))
+        second = await asyncio.wait_for(iterator.__anext__(), timeout=2)
+        assert second["type"] == "game.commentary"
+        assert second["data"]["point_index"] == 2
+    finally:
+        await worker.stop()
+
+
+def test_score_line_clamps_negative_points() -> None:
+    assert score_line({"game_points": [-1, 0]}) == "0-0"
+    assert score_line({"game_points": [-5, -5]}) == "0-0"
+    assert score_line({"game_points": [1, 2]}) == "15-30"
+    assert score_line({"game_points": [3, 3]}) == "deuce"
+
+
+class _FailingProvider:
+    source = "failing"
+
+    async def generate(self, event: Any, context: Any = None) -> Any:
+        raise RuntimeError("LLM exploded")
+
+
+@pytest.mark.asyncio
+async def test_fallback_provider_recovers_from_primary_exception() -> None:
+    provider = FallbackCommentaryProvider(_FailingProvider(), TemplateCommentaryProvider())  # type: ignore[arg-type]
+    event = build_commentary_event("g1", make_message(1, reason="ACE"), GAME_DETAILS)
+
+    draft = await provider.generate(event)
+
+    assert draft is not None
+    assert draft.text
+
+
+@pytest.mark.asyncio
+async def test_commentary_store_append_uses_single_pipeline_round_trip(valid_config: ConfigParser) -> None:
+    from app.commentary.store import CommentaryStore
+
+    class _FakePipeline:
+        def __init__(self) -> None:
+            self.ops: list[str] = []
+
+        def rpush(self, *args: Any) -> _FakePipeline:
+            self.ops.append("rpush")
+            return self
+
+        def ltrim(self, *args: Any) -> _FakePipeline:
+            self.ops.append("ltrim")
+            return self
+
+        def expire(self, *args: Any) -> _FakePipeline:
+            self.ops.append("expire")
+            return self
+
+        async def execute(self) -> list[Any]:
+            return [1, True, True]
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.pipeline_calls = 0
+            self.pipeline_obj = _FakePipeline()
+
+        def pipeline(self) -> _FakePipeline:
+            self.pipeline_calls += 1
+            return self.pipeline_obj
+
+    class _FakeStorage:
+        def __init__(self, client: _FakeClient) -> None:
+            self._client = client
+
+        def is_connected(self) -> bool:
+            return True
+
+        def get_client(self) -> _FakeClient:
+            return self._client
+
+    client = _FakeClient()
+    store = CommentaryStore(_FakeStorage(client))  # type: ignore[arg-type]
+
+    await store.append("g1", {"text": "Ace!"})
+
+    assert client.pipeline_calls == 1
+    assert client.pipeline_obj.ops == ["rpush", "ltrim", "expire"]
 
 
 @pytest.mark.asyncio

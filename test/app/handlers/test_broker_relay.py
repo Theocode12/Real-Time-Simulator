@@ -161,3 +161,33 @@ async def test_shutdown_cancels_all_tasks(broker_relay: BrokerRelay, mock_contex
 
     assert len(broker_relay._tasks) == 0
     assert all(t.cancelled() for t in tasks)
+
+
+@pytest.mark.asyncio
+async def test_stop_for_game_cancels_only_matching_game(broker_relay: BrokerRelay, mock_context: MagicMock) -> None:
+    """Verify that stop_for_game releases one game's tasks and keeps others."""
+
+    block = asyncio.Event()
+
+    async def _blocking_generator() -> AsyncGenerator[Any, None]:
+        await block.wait()
+        if False:
+            yield
+
+    mock_context.broker.subscribe.side_effect = lambda *args, **kwargs: _blocking_generator()
+
+    await broker_relay.start_listener("game1", [BrokerChannels.SCORES_UPDATE], "/g", AsyncMock())
+    await broker_relay.start_listener("game1", [BrokerChannels.CONTROLS], "/g", AsyncMock())
+    await broker_relay.start_listener("game2", [BrokerChannels.CONTROLS], "/g", AsyncMock())
+    assert len(broker_relay._tasks) == 3
+
+    game2_key = broker_relay._create_subscription_key("game2", [BrokerChannels.CONTROLS])
+    game2_task = broker_relay._tasks[game2_key]
+
+    await broker_relay.stop_for_game("game1")
+
+    assert len(broker_relay._tasks) == 1
+    assert game2_key in broker_relay._tasks
+    assert not game2_task.done()
+
+    await broker_relay.shutdown()

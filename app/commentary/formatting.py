@@ -37,7 +37,7 @@ def score_line(score: dict[str, Any]) -> str:
         return ""
     if left >= 3 and right >= 3:
         return "deuce" if left == right else "advantage"
-    return f"{_POINT_NAMES[min(left, 3)]}-{_POINT_NAMES[min(right, 3)]}"
+    return f"{_POINT_NAMES[max(0, min(left, 3))]}-{_POINT_NAMES[max(0, min(right, 3))]}"
 
 
 def reason_phrase(reason: Any) -> str:

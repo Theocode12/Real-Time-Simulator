@@ -106,6 +106,18 @@ async def test_on_cast_throttles_rapid_repeats(namespace: SupportNamespace, mock
 
 
 @pytest.mark.asyncio
+async def test_on_cast_throttled_vote_emits_error(namespace: SupportNamespace, mock_context: MagicMock) -> None:
+    """A throttled vote must be acknowledged, not silently dropped."""
+    await namespace.on_cast("sid1", {"game_id": "g1", "side": "team_1"})
+    namespace.emit_error.assert_not_awaited()
+
+    await namespace.on_cast("sid1", {"game_id": "g1", "side": "team_2"})
+
+    namespace.emit_error.assert_awaited_once()
+    assert mock_context.support.cast_vote.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_on_disconnect_cleans_session(namespace: SupportNamespace) -> None:
     namespace._sessions["sid1"] = {"game_id": "g1", "voter_id": "v1"}
 

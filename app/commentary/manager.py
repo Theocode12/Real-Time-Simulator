@@ -44,10 +44,6 @@ class CommentaryManager:
                 logger=self.logger,
             )
 
-    @property
-    def store(self) -> CommentaryStore | None:
-        return self._store
-
     async def start_for_game(
         self,
         game_id: str,
