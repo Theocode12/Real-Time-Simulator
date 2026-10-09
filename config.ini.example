@@ -104,6 +104,8 @@ ttlSeconds = 43200
 [celery]
 BrokerUrl =
 BackendUrl =
+# Default task queue (lets a dev stack on a shared broker isolate its tasks).
+TaskQueue = celery
 
 [background]
 StreamKey = background:game:commands
