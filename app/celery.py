@@ -40,3 +40,6 @@ app = Celery(
 )
 
 app.autodiscover_tasks(["app.background.tasks"])
+
+# Configurable default queue so dev stacks sharing a broker stay isolated.
+app.conf.task_default_queue = configParser.get("celery", "TaskQueue", fallback="celery")
