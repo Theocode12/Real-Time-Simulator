@@ -25,6 +25,14 @@ async def _process_broker_message(
             return None
 
     event: GameEvent = msg_type
+    if event in {
+        GameEvent.GAME_CONTROL_START,
+        GameEvent.GAME_CONTROL_PAUSE,
+        GameEvent.GAME_CONTROL_RESUME,
+        GameEvent.GAME_CONTROL_SPEED,
+    }:
+        # The controls channel carries commands to the scheduler, not client acknowledgements.
+        return None
     return event, message
 
 

@@ -10,8 +10,14 @@ from .base import BaseHandler
 class AuthenticatedHandler(BaseHandler):
     async def handle(self, sid: str, data: dict[str, Any]) -> None:
         token: str = data.get("token", "")
-        if not self.context.auth.validate(token):
-            await self.context.sio.emit(GameEvent.ERROR, {"error": "Unauthorized"}, to=sid)
+        game_id = data.get("game_id", "")
+        if not self.context.auth.validate(token) or not self.context.auth.validate_for_game(token, game_id):
+            await self.context.sio.emit(
+                GameEvent.ERROR,
+                {"error": "Unauthorized"},
+                to=sid,
+                namespace=data.get("namespace", ""),
+            )
             return
         await self.handle_authenticated(sid, data)
 

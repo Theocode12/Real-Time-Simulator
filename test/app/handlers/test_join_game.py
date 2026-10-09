@@ -80,7 +80,7 @@ async def test_handle_success(join_game_handler: JoinGameHandler, mock_context: 
     data = {"game_id": game_id, "namespace": "/game"}
 
     mock_context.scheduler_manager.has_scheduler.return_value = True
-    mock_context.scheduler_manager.get_game_data.return_value = {"game_state": "ONGOING"}
+    mock_context.scheduler_manager.get_game_data.return_value = {"game_state": "ongoing", "speed": 4.0}
 
     await join_game_handler.handle(sid, data)
 
@@ -98,7 +98,8 @@ async def test_handle_success(join_game_handler: JoinGameHandler, mock_context: 
     mock_context.sio.emit.assert_awaited_once_with(
         GameEvent.GAME_JOIN,
         {
-            "game_state": "ONGOING",
+            "game_state": "ongoing",
+            "speed": 4.0,
             "message": f"Successfully joined game {game_id}",
         },
         to=sid,
@@ -160,11 +161,12 @@ async def test_handle_enter_room_failure(join_game_handler: JoinGameHandler, moc
                 {"type": GameEvent.GAME_SCORE_UPDATE, "data": "score"},
             ),
         ),
+        ({"type": GameEvent.GAME_CONTROL_PAUSE, "data": "end"}, None),
         (
-            {"type": GameEvent.GAME_CONTROL_PAUSE, "data": "end"},
+            {"type": GameEvent.GAME_JOIN, "game_state": "autoplay", "speed": 1},
             (
-                GameEvent.GAME_CONTROL_PAUSE,
-                {"type": GameEvent.GAME_CONTROL_PAUSE, "data": "end"},
+                GameEvent.GAME_JOIN,
+                {"type": GameEvent.GAME_JOIN, "game_state": "autoplay", "speed": 1},
             ),
         ),
         (

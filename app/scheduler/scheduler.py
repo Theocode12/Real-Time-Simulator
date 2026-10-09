@@ -94,6 +94,7 @@ class GameScheduler(BaseScheduler):
     feeder: BaseGameFeeder
     pause_event: Event
     speed: float
+    base_delay: float
     controls: dict[str, Callable[..., Awaitable[None]]]
     state: SchedulerState
     latest_score: dict[str, Any] | None
@@ -128,7 +129,8 @@ class GameScheduler(BaseScheduler):
         self.feeder = feeder
         self.state_publisher = state_publisher
         self.pause_event = Event()
-        self.speed = self.config.getfloat("app", "defaultGameSpeed", fallback=1.0)
+        self.base_delay = self.config.getfloat("app", "defaultGameSpeed", fallback=1.0)
+        self.speed = 1.0
         self.score_update_sleep_task: Task[None] | None = None
         self.state = SchedulerState.NOT_STARTED
         self.pause_timeout_secs = self.config.getfloat("app", "pauseTimeoutSecs", fallback=60.0)
@@ -157,12 +159,14 @@ class GameScheduler(BaseScheduler):
         game_details = await self.feeder.get_game_details()
         return {
             "game_state": self.state,
+            "speed": self.speed,
             "latest_score": self.latest_score,
             "created_at": self.created_at,
             **game_details,
             "_recovery": {
                 "consumed_count": self.feeder.consumed_count,
                 "speed": self.speed,
+                "speed_unit": "multiplier",
                 "updated_at": time.time(),
             },
         }
@@ -184,6 +188,21 @@ class GameScheduler(BaseScheduler):
             )
         except Exception:
             self.logger.exception("Failed to publish scheduler state snapshot")
+
+    async def _publish_client_state(self) -> None:
+        """Relay the current state through the existing game.join client contract."""
+        try:
+            await self.publish(
+                BrokerChannels.CONTROLS,
+                {
+                    "type": GameEvent.GAME_JOIN,
+                    "game_id": self.game_id,
+                    "game_state": self.state,
+                    "speed": self.speed,
+                },
+            )
+        except Exception:
+            self.logger.exception("Failed to publish client state for game_id=%s", self.game_id)
 
     def _format_score_update_payload(self, score: dict[str, Any]) -> dict[str, Any]:
         """
@@ -238,6 +257,7 @@ class GameScheduler(BaseScheduler):
             self._sleep_interrupted_intentionally = True
             self.score_update_sleep_task.cancel()
         self._cancel_pause_timer()
+        await self._publish_client_state()
 
     async def run(self) -> None:
         """
@@ -274,7 +294,7 @@ class GameScheduler(BaseScheduler):
 
                 # Controlled pacing
                 try:
-                    self.score_update_sleep_task = create_task(sleep(self.speed))
+                    self.score_update_sleep_task = create_task(sleep(self.base_delay / self.speed))
                     await self.score_update_sleep_task
                 except CancelledError:
                     if self._sleep_interrupted_intentionally:
@@ -331,6 +351,7 @@ class GameScheduler(BaseScheduler):
         self.logger.info(f"Starting scheduler for game_id={self.game_id}")
         self.pause_event.set()
         self.state = SchedulerState.ONGOING
+        await self._publish_client_state()
 
     async def pause(self) -> None:
         """
@@ -345,6 +366,7 @@ class GameScheduler(BaseScheduler):
         self.pause_event.clear()
         self.state = SchedulerState.PAUSED
         self._start_pause_timer()
+        await self._publish_client_state()
 
         if self.score_update_sleep_task and not self.score_update_sleep_task.done():
             self._sleep_interrupted_intentionally = True
@@ -362,24 +384,26 @@ class GameScheduler(BaseScheduler):
         self.pause_event.set()
         self._cancel_pause_timer()
         self.state = SchedulerState.ONGOING
+        await self._publish_client_state()
 
     async def adjust_speed(self, new_speed: float) -> None:
         """
-        Dynamically adjust the update speed of the game scheduler.
+        Dynamically adjust the game speed multiplier (1x through 7x).
 
         Args:
-            new_speed (float): New delay in seconds between score updates.
+            new_speed (float): New multiplier; point delay is the configured base delay divided by this value.
 
         Side Effects:
             - Updates internal sleep duration.
             - Cancels current sleep task if one is running.
         """
-        if new_speed <= 0:
+        if not 1 <= new_speed <= 7:
             self.logger.warning(f"Ignored invalid speed={new_speed} for game_id={self.game_id}")
             return
 
         self.logger.info(f"Adjusting speed for game_id={self.game_id} to speed={new_speed}")
         self.speed = new_speed
+        await self._publish_client_state()
 
         if self.score_update_sleep_task and not self.score_update_sleep_task.done():
             self.logger.debug("Cancelling score update sleep task if available")
@@ -402,6 +426,8 @@ class GameScheduler(BaseScheduler):
             async for message in control_iterator:
                 self.logger.debug(f"Received control message: {message}")
                 command_type = message.get("type", "")
+                if command_type == GameEvent.GAME_JOIN:
+                    continue
                 handler = self.controls.get(command_type)
 
                 if handler:
