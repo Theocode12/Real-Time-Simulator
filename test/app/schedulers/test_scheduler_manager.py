@@ -10,6 +10,7 @@ import pytest
 from pytest import MonkeyPatch
 
 from app.scheduler.manager import SchedulerContext, SchedulerManager
+from app.scheduler.scheduler import GameScheduler, SchedulerState
 from gameengine.store.game_data import GameMetaData
 
 
@@ -125,6 +126,36 @@ async def test_get_game_data(monkeypatch: MonkeyPatch, scheduler_manager: Schedu
         await task
     except asyncio.CancelledError:
         pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", list(SchedulerState))
+async def test_get_game_data_includes_client_state_and_effective_speed(
+    state: SchedulerState,
+    scheduler_manager: SchedulerManager,
+) -> None:
+    feeder = MagicMock()
+    feeder.get_game_details = AsyncMock(return_value={"teams": []})
+    feeder.consumed_count = 0
+    scheduler = GameScheduler("game-state", scheduler_manager._broker, feeder, config=scheduler_manager.config)
+    scheduler.state = state
+    scheduler.speed = 4.0
+    scheduler_manager._schedulers["game-state"] = scheduler
+
+    metadata = await scheduler_manager.get_game_data("game-state")
+
+    assert metadata is not None
+    assert metadata["game_state"] == state
+    assert metadata["speed"] == 4.0
+    assert SchedulerState(str(metadata["game_state"]).lower()) is state
+    assert str(metadata["game_state"]).upper() == state.name
+
+
+def test_recovered_speed_migrates_legacy_delay_values(scheduler_manager: SchedulerManager) -> None:
+    assert scheduler_manager._get_recovered_speed({"speed": 2.0}) == 1.0
+    assert scheduler_manager._get_recovered_speed({"speed": 0.5}) == 2.0
+    assert scheduler_manager._get_recovered_speed({"speed": 0.1}) == 7.0
+    assert scheduler_manager._get_recovered_speed({"speed": 4.0, "speed_unit": "multiplier"}) == 4.0
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,9 @@ Users can tweak multiple parameters to define how their tennis matches are playe
 - `POST /start-game` → Start a new match and return a WebSocket URL.
 - `GET /match/{match_id}` → Get match metadata (players, rules, status).
 - `GET /live-matches` → Fetch ongoing AI & player matches.
+- `POST /api/v1/games/{game_id}/control-token` → Issue an expiring owner token for an active game. This trusted control-plane endpoint requires an `X-Secret` header matching the server's `API_SECRET`; configure `GAME_CONTROL_TOKEN_SECRET` to sign the game-scoped tokens returned in the response.
+
+The owner token is sent with game control WebSocket messages. Keep `GAME_CONTROL_TOKEN_SECRET` identical across backend instances and separate from `API_SECRET`.
 
 ### **3.2 WebSocket Endpoints**
 - `ws://server/game/{game_id}` → Stream live game data.

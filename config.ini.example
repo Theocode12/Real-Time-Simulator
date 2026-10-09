@@ -16,7 +16,7 @@ redisPassword =
 # Broker can be 'memory' or 'redis'
 messageBroker = memory
 
-# For Game (float)
+# Seconds between points at 1x speed; UI speed controls multiply pacing from 1x to 7x.
 defaultGameSpeed = 1.0
 pauseTimeoutSecs = 60
 

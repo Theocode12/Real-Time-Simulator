@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.scheduler.scheduler import GameScheduler, SchedulerCommands, SchedulerState
+from app.shared.enums.broker_channels import BrokerChannels
 from app.shared.enums.game_event import GameEvent
 
 
@@ -32,6 +33,7 @@ def dummy_feeder() -> MagicMock:
 @pytest.fixture
 def dummy_broker() -> MagicMock:
     broker = MagicMock()
+    broker.publish = AsyncMock()
     broker.subscribe = AsyncMock()
 
     async def dummy_control_messages() -> AsyncGenerator[Any, Any]:
@@ -149,7 +151,8 @@ async def test_adjust_speed_ignores_invalid_input(
         logger=dummy_logger,
     )
     initial_speed = scheduler.speed
-    await scheduler.adjust_speed(-5)
+    await scheduler.adjust_speed(0)
+    await scheduler.adjust_speed(8)
     assert scheduler.speed == initial_speed
 
 
@@ -172,6 +175,60 @@ async def test_get_metadata_returns_data_combined_from_feeder_and_scheduler(
     assert "game_state" in metadata
     assert "teams" in metadata
     assert metadata["game_state"] == SchedulerState.ONGOING
+    assert metadata["speed"] == 1.0
+    assert metadata["_recovery"]["speed"] == 1.0
+    assert metadata["_recovery"]["speed_unit"] == "multiplier"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", list(SchedulerState))
+async def test_game_state_metadata_round_trips(
+    state: SchedulerState,
+    valid_config: ConfigParser,
+    dummy_logger: Logger,
+    dummy_feeder: MagicMock,
+    dummy_broker: MagicMock,
+) -> None:
+    scheduler = GameScheduler("test_game", dummy_broker, dummy_feeder, config=valid_config, logger=dummy_logger)
+    scheduler.state = state
+
+    metadata = await scheduler.get_metadata()
+
+    assert SchedulerState(str(metadata["game_state"]).lower()) is state
+    assert str(metadata["game_state"]).upper() == state.name
+
+
+@pytest.mark.asyncio
+async def test_speed_multiplier_controls_effective_point_delay(
+    monkeypatch: pytest.MonkeyPatch,
+    valid_config: ConfigParser,
+    dummy_logger: Logger,
+    dummy_feeder: MagicMock,
+) -> None:
+    from app.scheduler import scheduler as scheduler_module
+
+    delays: list[float] = []
+
+    async def capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(scheduler_module, "sleep", capture_sleep)
+    broker = MagicMock()
+    broker.publish = AsyncMock()
+
+    async def no_controls() -> AsyncGenerator[dict[str, Any], None]:
+        if False:
+            yield {}
+
+    broker.subscribe = AsyncMock(return_value=no_controls())
+    scheduler = GameScheduler("test_game", broker, dummy_feeder, config=valid_config, logger=dummy_logger)
+    await scheduler.adjust_speed(7)
+    await scheduler.start()
+
+    await scheduler.run()
+
+    assert scheduler.speed == 7
+    assert delays == [1 / 7] * 3
 
 
 @pytest.mark.asyncio
@@ -221,9 +278,21 @@ async def test_resume_due_to_timeout_resumes_scheduler(
     await scheduler.pause()
     scheduler.score_update_sleep_task = asyncio.create_task(asyncio.sleep(10))
     await asyncio.sleep(0.02)
+    if scheduler.score_update_sleep_task is not None:
+        await asyncio.gather(scheduler.score_update_sleep_task, return_exceptions=True)
     assert scheduler.state == SchedulerState.AUTOPLAY
     assert scheduler.pause_event.is_set()
     assert scheduler.score_update_sleep_task.cancelled()
+    assert dummy_broker.publish.await_args_list[-1].args == (
+        "test_game",
+        BrokerChannels.CONTROLS,
+        {
+            "type": GameEvent.GAME_JOIN,
+            "game_id": "test_game",
+            "game_state": SchedulerState.AUTOPLAY,
+            "speed": 1.0,
+        },
+    )
 
 
 def test_format_score_update_payload(
@@ -326,7 +395,7 @@ async def test_run_publishes_sentinel_on_completion(
 
     # 3. Create and run the scheduler
     scheduler = GameScheduler("test_game", broker, feeder, config=valid_config, logger=dummy_logger)
-    scheduler.speed = 0  # Run as fast as possible
+    scheduler.base_delay = 0  # Run as fast as possible while preserving a valid 1x multiplier
     await scheduler.start()  # Set state to ONGOING
 
     await scheduler.run()

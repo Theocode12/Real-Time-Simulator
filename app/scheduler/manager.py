@@ -166,6 +166,17 @@ class SchedulerManager:
             return await scheduler.get_metadata()
         return None
 
+    def _get_recovered_speed(self, recovery: dict[str, Any]) -> float:
+        stored_speed = recovery.get("speed", 1.0)
+        if not isinstance(stored_speed, (int, float)) or isinstance(stored_speed, bool) or stored_speed <= 0:
+            return 1.0
+
+        if recovery.get("speed_unit") != "multiplier":
+            base_delay = self.config.getfloat("app", "defaultGameSpeed", fallback=1.0)
+            stored_speed = base_delay / stored_speed if base_delay > 0 else 1.0
+
+        return min(7.0, max(1.0, float(stored_speed)))
+
     async def create_or_get_scheduler(self, context: SchedulerContext) -> tuple[BaseScheduler, asyncio.Task[None]]:
         """
         Create and start a scheduler for the given game if not already running.
@@ -478,7 +489,7 @@ class SchedulerManager:
 
                     recovery = data.get("_recovery", {})
                     consumed_count = recovery.get("consumed_count", 0)
-                    speed = recovery.get("speed", 1.0)
+                    speed = self._get_recovered_speed(recovery)
 
                     tournament_id = None
                     mc = data.get("match_context") or {}

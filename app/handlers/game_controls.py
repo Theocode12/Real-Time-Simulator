@@ -104,5 +104,5 @@ class SpeedControlSchema(BaseModel):
 
     game_id: str
     token: str
-    speed: int = Field(..., ge=1, le=7)
+    speed: int = Field(..., ge=1, le=7, strict=True)
     type: Literal[GameEvent.GAME_CONTROL_SPEED]
